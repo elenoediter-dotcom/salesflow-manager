@@ -1311,6 +1311,21 @@
           </div>
         </div>
       </div>
+
+      <!-- 売上グラフ -->
+      <div class="card" style="margin-bottom:24px">
+        <div class="card-header">
+          <div class="card-title"><i class="fas fa-circle-yen" style="color:var(--accent3)"></i> 月別売上（入金済み）</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <div style="font-size:12px;color:var(--text-muted)">累計：<span id="ana-total-revenue" style="font-weight:700;color:var(--accent3)">¥0</span></div>
+            <select class="form-control" id="revenue-year" style="width:auto;padding:5px 10px;font-size:12px" onchange="renderAnalytics()"></select>
+          </div>
+        </div>
+        <div class="card-body chart-container" style="height:240px">
+          <canvas id="chart-revenue"></canvas>
+        </div>
+      </div>
+
     </div>
 
     <!-- ========== SETTINGS ========== -->
@@ -1902,7 +1917,7 @@ const { createClient } = supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 let currentUser = null;
 let accessToken = null; // JWTを直接保持
-let chartMethod = null, chartMonthly = null, chartStatus = null;
+let chartMethod = null, chartMonthly = null, chartStatus = null, chartRevenue = null;
 
 // Supabase JSクライアントをバイパスしてraw fetchでAPI呼び出し
 async function sbFetch(table, method, body=null, filter='', upsert=false) {
@@ -2258,6 +2273,81 @@ function renderAnalytics() {
   const perfEl=document.getElementById('method-performance'),entries=Object.entries(mp).sort((a,b)=>b[1].total-a[1].total);
   if(!entries.length){perfEl.innerHTML=`<div class="empty-state" style="padding:20px 0"><i class="fas fa-chart-bar" style="font-size:28px"></i><p style="font-size:12px">データなし</p></div>`;return;}
   perfEl.innerHTML=entries.map(([method,m])=>`<div style="padding:10px 0;border-bottom:1px solid var(--border)"><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><div style="font-size:13px;font-weight:600">${esc(method)}</div><div style="display:flex;gap:8px"><span class="badge badge-purple">${m.total}本</span><span class="badge badge-green">アポ${m.apo}件</span><span class="badge badge-orange">成約${m.contracts}件</span></div></div><div style="display:flex;gap:6px;align-items:center"><div style="font-size:11px;color:var(--text-muted);width:50px">アポ率</div><div class="progress-bar-wrap" style="flex:1"><div class="progress-bar" style="width:${m.total?Math.round(m.apo/m.total*100):0}%;background:linear-gradient(90deg,#00d4aa,#00ffc8)"></div></div><div style="font-size:12px;font-weight:700;color:var(--accent3);width:36px;text-align:right">${m.total?Math.round(m.apo/m.total*100):0}%</div></div></div>`).join('');
+
+  // 売上グラフ（入金済み）
+  const revYearSel = document.getElementById('revenue-year');
+  if (!revYearSel) return;
+  const paidInvoices = db.invoices.filter(i => i.status === '入金済み' && i.issueDate);
+  const revYears = [...new Set(paidInvoices.map(i => i.issueDate.slice(0,4)))];
+  if (!revYears.includes(curYear)) revYears.push(curYear);
+  revYears.sort().reverse();
+  revYearSel.innerHTML = revYears.map(y => `<option value="${y}" ${y===curYear?'selected':''}>${y}年</option>`).join('');
+  const revYear = revYearSel.value || curYear;
+
+  const revMonths = Array.from({length:12}, (_,i) => `${revYear}-${String(i+1).padStart(2,'0')}`);
+  const revLabels = revMonths.map(m => m.slice(5) + '月');
+  const monthlyRevenue = revMonths.map(m =>
+    paidInvoices.filter(i => i.issueDate && i.issueDate.startsWith(m)).reduce((s,i) => s+(i.total||0), 0)
+  );
+  const cumulativeRevenue = monthlyRevenue.reduce((acc,v,i) => { acc.push((acc[i-1]||0)+v); return acc; }, []);
+  const totalRevenue = monthlyRevenue.reduce((s,v) => s+v, 0);
+  document.getElementById('ana-total-revenue').textContent = '¥' + totalRevenue.toLocaleString();
+
+  if (chartRevenue) chartRevenue.destroy();
+  chartRevenue = new Chart(document.getElementById('chart-revenue').getContext('2d'), {
+    data: {
+      labels: revLabels,
+      datasets: [
+        {
+          type: 'bar',
+          label: '月別入金額',
+          data: monthlyRevenue,
+          backgroundColor: 'rgba(0,212,170,0.5)',
+          borderRadius: 6,
+          yAxisID: 'y',
+        },
+        {
+          type: 'line',
+          label: '累計入金額',
+          data: cumulativeRevenue,
+          borderColor: '#ffa940',
+          backgroundColor: 'rgba(255,169,64,0.1)',
+          borderWidth: 2.5,
+          pointBackgroundColor: '#ffa940',
+          pointRadius: 4,
+          fill: true,
+          tension: 0.3,
+          yAxisID: 'y2',
+        }
+      ]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: {
+        legend: { labels: { color: '#8b8fa8', font: { size: 11 } } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}：¥${(ctx.raw||0).toLocaleString()}`
+          }
+        }
+      },
+      scales: {
+        x: { ticks: { color: '#5a5e78', font: { size: 10 } }, grid: { color: 'rgba(255,255,255,0.04)' } },
+        y: {
+          position: 'left',
+          beginAtZero: true,
+          ticks: { color: '#00d4aa', font: { size: 10 }, callback: v => '¥'+v.toLocaleString() },
+          grid: { color: 'rgba(255,255,255,0.06)' }
+        },
+        y2: {
+          position: 'right',
+          beginAtZero: true,
+          ticks: { color: '#ffa940', font: { size: 10 }, callback: v => '¥'+v.toLocaleString() },
+          grid: { display: false }
+        }
+      }
+    }
+  });
 }
 
 // ──────────────────────────────────────────────
