@@ -1430,12 +1430,50 @@
             <div class="settings-section-title"><i class="fas fa-user-plus"></i> 子アカウント招待</div>
             <div class="card">
               <div class="card-body">
-                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:12px;line-height:1.7">招待したいメールアドレスを入力してください。招待メールが届き、登録するとあなたのデータにアクセスできるようになります。</div>
-                <div style="display:flex;gap:8px">
-                  <input type="email" class="form-control" id="invite-email" placeholder="招待するメールアドレス" />
-                  <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="sendInvite()"><i class="fas fa-paper-plane"></i> 招待する</button>
+                <div style="font-size:12px;color:var(--text-secondary);margin-bottom:16px;line-height:1.8">
+                  招待リンクを生成してLINE・DM・メールなど好きな方法で送れるで。<br>
+                  受け取った人がリンクを開くと登録画面が表示されるようになってるわ。
                 </div>
-                <div id="invite-msg" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+
+                <!-- リンク招待 -->
+                <div style="margin-bottom:16px">
+                  <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px"><i class="fas fa-link" style="margin-right:6px"></i>リンクで招待（LINE・DM等）</div>
+                  <div style="display:flex;gap:8px;margin-bottom:8px">
+                    <input type="text" class="form-control" id="invite-link-display" readonly
+                      value="https://sales-manager-nine-livid.vercel.app"
+                      style="font-size:11px;color:var(--text-muted);cursor:pointer"
+                      onclick="copyInviteLink()" />
+                    <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="copyInviteLink()">
+                      <i class="fas fa-copy"></i> コピー
+                    </button>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button class="btn btn-secondary btn-sm" onclick="shareToLine()" style="background:#06C755;color:#fff;border-color:#06C755">
+                      <i class="fas fa-comment"></i> LINEで送る
+                    </button>
+                    <button class="btn btn-secondary btn-sm" onclick="shareToX()">
+                      <i class="fab fa-x-twitter"></i> Xで送る
+                    </button>
+                    <button class="btn btn-secondary btn-sm" onclick="nativeShare()">
+                      <i class="fas fa-share-nodes"></i> その他で共有
+                    </button>
+                  </div>
+                  <div id="copy-msg" style="font-size:12px;margin-top:8px;color:var(--accent3);min-height:16px"></div>
+                </div>
+
+                <div style="height:1px;background:var(--border);margin:16px 0"></div>
+
+                <!-- メール招待 -->
+                <div>
+                  <div style="font-size:12px;font-weight:700;color:var(--text-secondary);margin-bottom:8px"><i class="fas fa-envelope" style="margin-right:6px"></i>メールで招待</div>
+                  <div style="display:flex;gap:8px">
+                    <input type="email" class="form-control" id="invite-email" placeholder="招待するメールアドレス" />
+                    <button class="btn btn-secondary btn-sm" style="white-space:nowrap" onclick="sendInvite()">
+                      <i class="fas fa-paper-plane"></i> 送る
+                    </button>
+                  </div>
+                  <div id="invite-msg" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+                </div>
               </div>
             </div>
           </div>
@@ -1966,6 +2004,42 @@ function setAuthLoading(on) {
 
 function showApp() { document.getElementById('auth-overlay').style.display = 'none'; }
 function hideApp() { document.getElementById('auth-overlay').style.display = 'flex'; switchAuthTab('login'); }
+
+const INVITE_URL = 'https://sales-manager-nine-livid.vercel.app';
+const INVITE_MSG = `【営業管理システムへの招待】\nSalesFlowを一緒に使いませんか？\n以下のリンクから登録できます👇\n${INVITE_URL}`;
+
+function copyInviteLink() {
+  navigator.clipboard.writeText(INVITE_URL).then(() => {
+    const msg = document.getElementById('copy-msg');
+    msg.textContent = '✓ リンクをコピーしたで！LINEやDMに貼り付けて送ってな';
+    setTimeout(() => { msg.textContent = ''; }, 3000);
+  }).catch(() => {
+    // fallback
+    const el = document.getElementById('invite-link-display');
+    el.select(); document.execCommand('copy');
+    document.getElementById('copy-msg').textContent = '✓ コピーしたで！';
+  });
+}
+
+function shareToLine() {
+  const encoded = encodeURIComponent(INVITE_MSG);
+  window.open(`https://line.me/R/msg/text/?${encoded}`, '_blank');
+}
+
+function shareToX() {
+  const encoded = encodeURIComponent(INVITE_MSG);
+  window.open(`https://twitter.com/intent/tweet?text=${encoded}`, '_blank');
+}
+
+function nativeShare() {
+  if (navigator.share) {
+    navigator.share({ title: 'SalesFlow 招待', text: INVITE_MSG, url: INVITE_URL })
+      .catch(() => { copyInviteLink(); });
+  } else {
+    copyInviteLink();
+    document.getElementById('copy-msg').textContent = '✓ リンクをコピーしたで！好きなアプリに貼り付けて送ってな';
+  }
+}
 
 async function sendInvite() {
   const email = document.getElementById('invite-email').value.trim();
