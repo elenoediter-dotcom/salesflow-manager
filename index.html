@@ -2234,7 +2234,14 @@ async function saveProfile() {
   db.settings.name=name;
   db.settings.targetSales=parseInt(document.getElementById('settings-target-sales').value)||50;
   db.settings.targetContracts=parseInt(document.getElementById('settings-target-contracts').value)||5;
-  const{error:pErr}=await sbFetch('profiles','POST',{id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,client_statuses:db.clientStatuses,updated_at:new Date().toISOString()},'',true);
+  const payload={id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,client_statuses:db.clientStatuses,updated_at:new Date().toISOString()};
+  let{error:pErr}=await sbFetch('profiles','POST',payload,'',true);
+  // スキーマキャッシュ未更新の場合は新カラムを除いて再試行
+  if(pErr&&pErr.message&&pErr.message.includes('schema cache')){
+    const fallback={...payload};delete fallback.schedule_types;delete fallback.client_statuses;
+    const r=await sbFetch('profiles','POST',fallback,'',true);
+    pErr=r.error;
+  }
   if(pErr){notify('保存に失敗したで：'+pErr.message,'error');return;}
   document.getElementById('sidebar-username').textContent=name;applyAvatar();notify('プロフィールを保存したで！','success');
 }
