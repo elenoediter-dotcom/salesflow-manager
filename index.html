@@ -1997,10 +1997,19 @@ function notify(msg,type='success',icon='') {
 // ──────────────────────────────────────────────
 //  ACTIVITY LOG
 // ──────────────────────────────────────────────
-async function addActivity(text,color='var(--accent)',icon='fas fa-star') {
+// タイムアウト付きwrite helper（8秒で諦める）
+function sbWrite(promise) {
+  return Promise.race([
+    promise,
+    new Promise((_,rej)=>setTimeout(()=>rej(new Error('接続タイムアウト。再度試してな')),8000))
+  ]);
+}
+
+function addActivity(text,color='var(--accent)',icon='fas fa-star') {
   db.activities.unshift({text,color,icon,time:new Date().toISOString()});
   if(db.activities.length>30) db.activities.pop();
-  await sb.from('activities').insert({user_id:currentUser.id,text,color,icon});
+  // バックグラウンドで非同期実行（メイン処理をブロックしない）
+  sb.from('activities').insert({user_id:currentUser.id,text,color,icon}).catch(()=>{});
 }
 function renderActivities() {
   const el=document.getElementById('activity-list');
@@ -2151,7 +2160,8 @@ async function saveProfile() {
   db.settings.name=name;
   db.settings.targetSales=parseInt(document.getElementById('settings-target-sales').value)||50;
   db.settings.targetContracts=parseInt(document.getElementById('settings-target-contracts').value)||5;
-  await sb.from('profiles').upsert({id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,updated_at:new Date().toISOString()});
+  const{error:pErr}=await sbWrite(sb.from('profiles').upsert({id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,updated_at:new Date().toISOString()}));
+  if(pErr){notify('保存に失敗したで：'+pErr.message,'error');return;}
   document.getElementById('sidebar-username').textContent=name;applyAvatar();notify('プロフィールを保存したで！','success');
 }
 function toggleSetting(el,key){el.classList.toggle('on');db.settings[key]=el.classList.contains('on');sb.from('profiles').update({[key==='animation'?'animation':'notify_enabled']:db.settings[key]}).eq('id',currentUser.id);}
@@ -2189,14 +2199,31 @@ async function saveSales() {
   const id=editingSalesId||uid();
   const item={id,date:document.getElementById('s-date').value,client,method:document.getElementById('s-method').value,status,apo:document.getElementById('s-apo').value,order:document.getElementById('s-order').value,contract:document.getElementById('s-contract').value,amount:document.getElementById('s-amount').value,memo:document.getElementById('s-memo').value.trim()};
   const row={id,user_id:currentUser.id,date:item.date,client,method:item.method,status,apo:+item.apo,has_order:+item.order,has_contract:+item.contract,amount:item.amount||null,memo:item.memo,updated_at:new Date().toISOString()};
-  if(editingSalesId){const idx=db.sales.findIndex(x=>x.id===editingSalesId);db.sales[idx]=item;await sb.from('sales').update(row).eq('id',editingSalesId);await addActivity(`<strong>${esc(client)}</strong> の営業情報を更新したで`,'var(--accent)','fas fa-pen');notify('更新したで！','success');}
-  else{db.sales.unshift(item);await sb.from('sales').insert({...row,created_at:new Date().toISOString()});await addActivity(`<strong>${esc(client)}</strong> への営業を記録したで（${esc(item.method)}）`,'var(--accent-light)','fas fa-paper-plane');notify('営業を追加したで！','success');if(item.contract==1&&db.settings.notify)notify('🎉 成約おめでとう！','success','fas fa-trophy');}
+  if(editingSalesId){
+    const idx=db.sales.findIndex(x=>x.id===editingSalesId);db.sales[idx]=item;
+    const{error}=await sbWrite(sb.from('sales').update(row).eq('id',editingSalesId));
+    if(error)throw error;
+    addActivity(`<strong>${esc(client)}</strong> の営業情報を更新したで`,'var(--accent)','fas fa-pen');
+    notify('更新したで！','success');
+  } else {
+    db.sales.unshift(item);
+    const{error}=await sbWrite(sb.from('sales').insert({...row,created_at:new Date().toISOString()}));
+    if(error)throw error;
+    addActivity(`<strong>${esc(client)}</strong> への営業を記録したで（${esc(item.method)}）`,'var(--accent-light)','fas fa-paper-plane');
+    notify('営業を追加したで！','success');
+    if(item.contract==1&&db.settings.notify)notify('🎉 成約おめでとう！','success','fas fa-trophy');
+  }
   closeModal('modal-sales');renderSalesTable();renderDashboard();document.getElementById('nav-badge-sales').textContent=db.sales.length;
 }
 function editSales(id){openSalesModal(id);}
 function deleteSales(id){
   const s=db.sales.find(x=>x.id===id);if(!s)return;
-  openConfirm(`「${s.client}」の営業記録を削除しますか？`,async()=>{db.sales=db.sales.filter(x=>x.id!==id);await sb.from('sales').delete().eq('id',id);await addActivity(`<strong>${esc(s.client)}</strong> の営業記録を削除したで`,'var(--accent2)','fas fa-trash');notify('削除したで','info');renderSalesTable();renderDashboard();document.getElementById('nav-badge-sales').textContent=db.sales.length;});
+  openConfirm(`「${s.client}」の営業記録を削除しますか？`,async()=>{
+    db.sales=db.sales.filter(x=>x.id!==id);
+    sbWrite(sb.from('sales').delete().eq('id',id)).catch(()=>{});
+    addActivity(`<strong>${esc(s.client)}</strong> の営業記録を削除したで`,'var(--accent2)','fas fa-trash');
+    notify('削除したで','info');renderSalesTable();renderDashboard();document.getElementById('nav-badge-sales').textContent=db.sales.length;
+  });
 }
 
 // ──────────────────────────────────────────────
@@ -2215,14 +2242,29 @@ async function saveClient() {
   const id=editingClientId||uid();
   const item={id,name,contact:document.getElementById('c-contact').value.trim(),email:document.getElementById('c-email').value.trim(),phone:document.getElementById('c-phone').value.trim(),industry:document.getElementById('c-industry').value,status:document.getElementById('c-status').value,sns:document.getElementById('c-sns').value.trim(),budget:document.getElementById('c-budget').value,memo:document.getElementById('c-memo').value.trim()};
   const row={...item,user_id:currentUser.id,updated_at:new Date().toISOString()};
-  if(editingClientId){const idx=db.clients.findIndex(x=>x.id===editingClientId);db.clients[idx]=item;await sb.from('clients').update(row).eq('id',editingClientId);await addActivity(`<strong>${esc(name)}</strong> のクライアント情報を更新したで`,'var(--accent3)','fas fa-user-pen');notify('更新したで！','success');}
-  else{db.clients.push(item);await sb.from('clients').insert({...row,created_at:new Date().toISOString()});await addActivity(`<strong>${esc(name)}</strong> をクライアントに追加したで`,'var(--accent3)','fas fa-user-plus');notify('クライアントを追加したで！','success');}
+  if(editingClientId){
+    const idx=db.clients.findIndex(x=>x.id===editingClientId);db.clients[idx]=item;
+    const{error}=await sbWrite(sb.from('clients').update(row).eq('id',editingClientId));
+    if(error)throw error;
+    addActivity(`<strong>${esc(name)}</strong> のクライアント情報を更新したで`,'var(--accent3)','fas fa-user-pen');
+    notify('更新したで！','success');
+  } else {
+    db.clients.push(item);
+    const{error}=await sbWrite(sb.from('clients').insert({...row,created_at:new Date().toISOString()}));
+    if(error)throw error;
+    addActivity(`<strong>${esc(name)}</strong> をクライアントに追加したで`,'var(--accent3)','fas fa-user-plus');
+    notify('クライアントを追加したで！','success');
+  }
   closeModal('modal-client');renderClientsTable();document.getElementById('nav-badge-clients').textContent=db.clients.length;
 }
 function editClient(id){openClientModal(id);}
 function deleteClient(id){
   const c=db.clients.find(x=>x.id===id);if(!c)return;
-  openConfirm(`「${c.name}」を削除しますか？`,async()=>{db.clients=db.clients.filter(x=>x.id!==id);await sb.from('clients').delete().eq('id',id);notify('削除したで','info');renderClientsTable();document.getElementById('nav-badge-clients').textContent=db.clients.length;});
+  openConfirm(`「${c.name}」を削除しますか？`,async()=>{
+    db.clients=db.clients.filter(x=>x.id!==id);
+    sbWrite(sb.from('clients').delete().eq('id',id)).catch(()=>{});
+    notify('削除したで','info');renderClientsTable();document.getElementById('nav-badge-clients').textContent=db.clients.length;
+  });
 }
 
 // ──────────────────────────────────────────────
@@ -2272,14 +2314,14 @@ async function saveSchedule(){
   try {
     if(editingScheduleId){
       const idx=db.schedules.findIndex(x=>x.id===editingScheduleId);db.schedules[idx]=item;
-      const{error}=await sb.from('schedules').update(row).eq('id',editingScheduleId);
+      const{error}=await sbWrite(sb.from('schedules').update(row).eq('id',editingScheduleId));
       if(error)throw error;
       notify('予定を更新したで！','success');
     } else {
       db.schedules.push(item);
-      const{error}=await sb.from('schedules').insert({...row,created_at:new Date().toISOString()});
+      const{error}=await sbWrite(sb.from('schedules').insert({...row,created_at:new Date().toISOString()}));
       if(error)throw error;
-      await addActivity(`予定「<strong>${esc(title)}</strong>」を追加したで`,schedTypeColor[item.type],'fas fa-calendar-plus');
+      addActivity(`予定「<strong>${esc(title)}</strong>」を追加したで`,getTypeColor(item.type),'fas fa-calendar-plus');
       notify('予定を追加したで！','success');
     }
     closeModal('modal-schedule');renderSchedulePage();
@@ -2289,7 +2331,7 @@ async function saveSchedule(){
   }
 }
 function editSchedule(id){openScheduleModal(id);}
-function deleteSchedule(id){const s=db.schedules.find(x=>x.id===id);if(!s)return;openConfirm(`「${s.title}」を削除しますか？`,async()=>{db.schedules=db.schedules.filter(x=>x.id!==id);await sb.from('schedules').delete().eq('id',id);notify('削除したで','info');renderSchedulePage();});}
+function deleteSchedule(id){const s=db.schedules.find(x=>x.id===id);if(!s)return;openConfirm(`「${s.title}」を削除しますか？`,async()=>{db.schedules=db.schedules.filter(x=>x.id!==id);sbWrite(sb.from('schedules').delete().eq('id',id)).catch(()=>{});notify('削除したで','info');renderSchedulePage();});}
 
 // ──────────────────────────────────────────────
 //  INVOICE CRUD
@@ -2330,12 +2372,22 @@ async function saveInvoice(){
   const{subtotal,tax,total}=calcInvTotal();const id=editingInvoiceId||uid();
   const item={id,number,client,issueDate:document.getElementById('inv-issue-date').value,dueDate:document.getElementById('inv-due-date').value,status:document.getElementById('inv-status').value,taxRate:document.getElementById('inv-tax').value,memo:document.getElementById('inv-memo').value.trim(),items:JSON.parse(JSON.stringify(invItems)),subtotal,tax,total};
   const row={id,user_id:currentUser.id,number,client,issue_date:item.issueDate,due_date:item.dueDate,status:item.status,tax_rate:+item.taxRate,memo:item.memo,items:item.items,subtotal,tax_amount:tax,total,updated_at:new Date().toISOString()};
-  if(editingInvoiceId){const idx=db.invoices.findIndex(x=>x.id===editingInvoiceId);db.invoices[idx]=item;await sb.from('invoices').update(row).eq('id',editingInvoiceId);notify('請求書を更新したで！','success');}
-  else{db.invoices.unshift(item);await sb.from('invoices').insert({...row,created_at:new Date().toISOString()});await addActivity(`請求書「<strong>${esc(number)}</strong>」を作成したで（¥${total.toLocaleString()}）`,'var(--accent3)','fas fa-file-invoice-dollar');notify('請求書を作成したで！','success');}
+  if(editingInvoiceId){
+    const idx=db.invoices.findIndex(x=>x.id===editingInvoiceId);db.invoices[idx]=item;
+    const{error}=await sbWrite(sb.from('invoices').update(row).eq('id',editingInvoiceId));
+    if(error)throw error;
+    notify('請求書を更新したで！','success');
+  } else {
+    db.invoices.unshift(item);
+    const{error}=await sbWrite(sb.from('invoices').insert({...row,created_at:new Date().toISOString()}));
+    if(error)throw error;
+    addActivity(`請求書「<strong>${esc(number)}</strong>」を作成したで（¥${total.toLocaleString()}）`,'var(--accent3)','fas fa-file-invoice-dollar');
+    notify('請求書を作成したで！','success');
+  }
   closeModal('modal-invoice');renderInvoicePage();
 }
 function editInvoice(id){openInvoiceModal(id);}
-function deleteInvoice(id){const inv=db.invoices.find(x=>x.id===id);if(!inv)return;openConfirm(`請求書「${inv.number}」を削除しますか？`,async()=>{db.invoices=db.invoices.filter(x=>x.id!==id);await sb.from('invoices').delete().eq('id',id);notify('削除したで','info');renderInvoicePage();});}
+function deleteInvoice(id){const inv=db.invoices.find(x=>x.id===id);if(!inv)return;openConfirm(`請求書「${inv.number}」を削除しますか？`,async()=>{db.invoices=db.invoices.filter(x=>x.id!==id);sbWrite(sb.from('invoices').delete().eq('id',id)).catch(()=>{});notify('削除したで','info');renderInvoicePage();});}
 
 // ──────────────────────────────────────────────
 //  CONFIRM / MODAL
