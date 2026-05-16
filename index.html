@@ -1208,11 +1208,6 @@
         </div>
         <select class="form-control" id="client-filter-status" style="width:auto" onchange="renderClientsTable()">
           <option value="">ステータス：すべて</option>
-          <option value="見込み">見込み</option>
-          <option value="商談中">商談中</option>
-          <option value="既存">既存</option>
-          <option value="休眠">休眠</option>
-          <option value="失注">失注</option>
         </select>
         <button class="btn btn-primary btn-sm" onclick="openClientModal()"><i class="fas fa-user-plus"></i> クライアント追加</button>
       </div>
@@ -1379,6 +1374,20 @@
                   <input type="text" class="form-control" id="new-industry-input" placeholder="新しい業種を入力..." onkeydown="if(event.key==='Enter')addIndustry()" />
                   <button class="btn btn-primary btn-sm" onclick="addIndustry()"><i class="fas fa-plus"></i> 追加</button>
                 </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title"><i class="fas fa-user-tag"></i> クライアントステータスカスタマイズ</div>
+            <div class="card">
+              <div class="card-body">
+                <div class="tag-list" id="client-status-list"></div>
+                <div style="display:flex;gap:8px;margin-top:4px">
+                  <input type="text" class="form-control" id="new-client-status-input" placeholder="例：過去取引あり・優先度高 など" onkeydown="if(event.key==='Enter')addClientStatus()" />
+                  <button class="btn btn-primary btn-sm" onclick="addClientStatus()"><i class="fas fa-plus"></i> 追加</button>
+                </div>
+                <div class="form-hint" style="margin-top:8px">追加したステータスはクライアント登録時に選択できるようになります</div>
               </div>
             </div>
           </div>
@@ -1906,6 +1915,7 @@ let db = {
   methods:['SNS DM','メール営業','電話営業','紹介','クラウドソーシング','ポートフォリオ','YouTube'],
   industries:['YouTube / 動画','EC / 通販','不動産','美容・サロン','飲食','IT / SaaS','教育','エンタメ','医療・クリニック','その他'],
   scheduleTypes:['アポ','商談','フォローアップ','締め切り','その他'],
+  clientStatuses:['見込み','商談中','既存','休眠','失注'],
 };
 
 // ──────────────────────────────────────────────
@@ -1992,6 +2002,7 @@ async function loadAllData() {
     if (p.methods && p.methods.length)       db.methods       = p.methods;
     if (p.industries && p.industries.length) db.industries    = p.industries;
     if (p.schedule_types && p.schedule_types.length) db.scheduleTypes = p.schedule_types;
+    if (p.client_statuses && p.client_statuses.length) db.clientStatuses = p.client_statuses;
   }
 }
 
@@ -2126,8 +2137,14 @@ function populateSalesMethodFilter() {
 //  CLIENTS TABLE
 // ──────────────────────────────────────────────
 function renderClientsTable() {
+  // フィルター選択肢を動的に更新
+  const filterSel=document.getElementById('client-filter-status');
+  const curFilter=filterSel.value;
+  filterSel.innerHTML='<option value="">ステータス：すべて</option>'+db.clientStatuses.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  if(curFilter)filterSel.value=curFilter;
+
   const search=(document.getElementById('client-search').value||'').toLowerCase();
-  const fs=document.getElementById('client-filter-status').value;
+  const fs=filterSel.value;
   let data=db.clients.slice().sort((a,b)=>(a.name||'').localeCompare(b.name||''));
   if(search)data=data.filter(c=>(c.name||'').toLowerCase().includes(search)||(c.contact||'').toLowerCase().includes(search)||(c.industry||'').toLowerCase().includes(search));
   if(fs)data=data.filter(c=>c.status===fs);
@@ -2179,7 +2196,7 @@ function renderSettings() {
   applyAvatar();
   const setT=(id,val)=>{const el=document.getElementById(id);val?el.classList.add('on'):el.classList.remove('on');};
   setT('toggle-animation',db.settings.animation);setT('toggle-notify',db.settings.notify);
-  renderMethodTags();renderIndustryTags();renderScheduleTypeTags();
+  renderMethodTags();renderIndustryTags();renderScheduleTypeTags();renderClientStatusTags();
 }
 function renderMethodTags(){document.getElementById('methods-list').innerHTML=db.methods.map((m,i)=>`<div class="tag">${esc(m)}<span class="tag-remove" onclick="removeMethod(${i})"><i class="fas fa-times"></i></span></div>`).join('');}
 function renderIndustryTags(){document.getElementById('industries-list').innerHTML=db.industries.map((ind,i)=>`<div class="tag" style="background:rgba(0,212,170,0.1);border-color:rgba(0,212,170,0.25);color:var(--accent3)">${esc(ind)}<span class="tag-remove" onclick="removeIndustry(${i})"><i class="fas fa-times"></i></span></div>`).join('');}
@@ -2195,12 +2212,29 @@ async function removeIndustry(i){db.industries.splice(i,1);await saveProfile();r
 async function addScheduleType(){const input=document.getElementById('new-schedule-type-input'),val=input.value.trim();if(!val)return;if(db.scheduleTypes.includes(val)){notify('すでに存在する種別や','error');return;}db.scheduleTypes.push(val);await saveProfile();input.value='';renderScheduleTypeTags();notify(`「${val}」を追加したで！`,'success');}
 async function removeScheduleType(i){if(db.scheduleTypes.length<=1){notify('最低1つは残しといてな','error');return;}db.scheduleTypes.splice(i,1);await saveProfile();renderScheduleTypeTags();notify('削除したで','info');}
 
+function renderClientStatusTags(){
+  const colors=['rgba(56,178,255,0.15)','rgba(108,99,255,0.15)','rgba(0,212,170,0.15)','rgba(255,255,255,0.06)','rgba(255,80,80,0.12)'];
+  const textColors=['var(--accent5)','var(--accent-light)','var(--accent3)','var(--text-secondary)','#ff6b6b'];
+  const el=document.getElementById('client-status-list');
+  if(!el)return;
+  el.innerHTML=db.clientStatuses.map((s,i)=>`<div class="tag" style="background:${colors[i%colors.length]};border-color:${textColors[i%textColors.length]}44;color:${textColors[i%textColors.length]}">${esc(s)}<span class="tag-remove" onclick="removeClientStatus(${i})"><i class="fas fa-times"></i></span></div>`).join('');
+}
+async function addClientStatus(){
+  const input=document.getElementById('new-client-status-input'),val=input.value.trim();
+  if(!val)return;if(db.clientStatuses.includes(val)){notify('すでに存在するステータスや','error');return;}
+  db.clientStatuses.push(val);await saveProfile();input.value='';renderClientStatusTags();notify(`「${val}」を追加したで！`,'success');
+}
+async function removeClientStatus(i){
+  if(db.clientStatuses.length<=1){notify('最低1つは残しといてな','error');return;}
+  db.clientStatuses.splice(i,1);await saveProfile();renderClientStatusTags();notify('削除したで','info');
+}
+
 async function saveProfile() {
   const name=(document.getElementById('settings-name').value||'').trim()||'マイユーザー';
   db.settings.name=name;
   db.settings.targetSales=parseInt(document.getElementById('settings-target-sales').value)||50;
   db.settings.targetContracts=parseInt(document.getElementById('settings-target-contracts').value)||5;
-  const{error:pErr}=await sbFetch('profiles','POST',{id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,updated_at:new Date().toISOString()},'',true);
+  const{error:pErr}=await sbFetch('profiles','POST',{id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,client_statuses:db.clientStatuses,updated_at:new Date().toISOString()},'',true);
   if(pErr){notify('保存に失敗したで：'+pErr.message,'error');return;}
   document.getElementById('sidebar-username').textContent=name;applyAvatar();notify('プロフィールを保存したで！','success');
 }
@@ -2273,8 +2307,9 @@ let editingClientId=null;
 function openClientModal(id=null) {
   editingClientId=id;
   document.getElementById('c-industry').innerHTML='<option value="">選択してください</option>'+db.industries.map(i=>`<option value="${esc(i)}">${esc(i)}</option>`).join('');
-  if(id){const c=db.clients.find(x=>x.id===id);if(!c)return;document.getElementById('client-modal-title').textContent='クライアントを編集';document.getElementById('c-name').value=c.name||'';document.getElementById('c-contact').value=c.contact||'';document.getElementById('c-email').value=c.email||'';document.getElementById('c-phone').value=c.phone||'';document.getElementById('c-industry').value=c.industry||'';document.getElementById('c-status').value=c.status||'見込み';document.getElementById('c-sns').value=c.sns||'';document.getElementById('c-budget').value=c.budget||'';document.getElementById('c-memo').value=c.memo||'';}
-  else{document.getElementById('client-modal-title').textContent='クライアントを追加';['c-name','c-contact','c-email','c-phone','c-sns','c-memo'].forEach(i=>document.getElementById(i).value='');document.getElementById('c-industry').value='';document.getElementById('c-status').value='見込み';document.getElementById('c-budget').value='';}
+  document.getElementById('c-status').innerHTML=db.clientStatuses.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  if(id){const c=db.clients.find(x=>x.id===id);if(!c)return;document.getElementById('client-modal-title').textContent='クライアントを編集';document.getElementById('c-name').value=c.name||'';document.getElementById('c-contact').value=c.contact||'';document.getElementById('c-email').value=c.email||'';document.getElementById('c-phone').value=c.phone||'';document.getElementById('c-industry').value=c.industry||'';document.getElementById('c-status').value=c.status||db.clientStatuses[0]||'';document.getElementById('c-sns').value=c.sns||'';document.getElementById('c-budget').value=c.budget||'';document.getElementById('c-memo').value=c.memo||'';}
+  else{document.getElementById('client-modal-title').textContent='クライアントを追加';['c-name','c-contact','c-email','c-phone','c-sns','c-memo'].forEach(i=>document.getElementById(i).value='');document.getElementById('c-industry').value='';document.getElementById('c-status').value=db.clientStatuses[0]||'';document.getElementById('c-budget').value='';}
   document.getElementById('modal-client').classList.add('open');
 }
 async function saveClient() {
@@ -2447,7 +2482,12 @@ function exportData(){const json=JSON.stringify({sales:db.sales,clients:db.clien
 //  HELPERS
 // ──────────────────────────────────────────────
 function statusBadge(s){const m={'アプローチ中':'badge-purple','アポ取得':'badge-green','受注':'badge-pink','成約':'badge-orange','失注':'badge-red','保留':'badge-gray'};return`<span class="badge ${m[s]||'badge-gray'}">${esc(s||'-')}</span>`;}
-function clientStatusBadge(s){const m={'見込み':'badge-blue','商談中':'badge-purple','既存':'badge-green','休眠':'badge-gray','失注':'badge-red'};return`<span class="badge ${m[s]||'badge-gray'}">${esc(s||'-')}</span>`;}
+function clientStatusBadge(s){
+  const classes=['badge-blue','badge-purple','badge-green','badge-gray','badge-red','badge-orange'];
+  const i=db.clientStatuses.indexOf(s);
+  const cls=i>=0?classes[i%classes.length]:'badge-gray';
+  return`<span class="badge ${cls}">${esc(s||'-')}</span>`;
+}
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
 function esc(str){return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
 
