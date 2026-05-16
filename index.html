@@ -1922,13 +1922,16 @@ async function sendInvite() {
 // ──────────────────────────────────────────────
 async function loadAllData() {
   const uid = currentUser.id;
+  const t = (ms) => new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms));
+  const safe = (promise) => Promise.race([promise, t(8000)]).catch(e=>({data:null,error:e}));
+
   const [sR, cR, scR, iR, aR, pR] = await Promise.all([
-    sb.from('sales').select('*').eq('user_id',uid).order('created_at',{ascending:false}),
-    sb.from('clients').select('*').eq('user_id',uid).order('name'),
-    sb.from('schedules').select('*').eq('user_id',uid).order('date'),
-    sb.from('invoices').select('*').eq('user_id',uid).order('created_at',{ascending:false}),
-    sb.from('activities').select('*').eq('user_id',uid).order('created_at',{ascending:false}).limit(30),
-    sb.from('profiles').select('*').eq('id',uid).single(),
+    safe(sb.from('sales').select('*').eq('user_id',uid).order('created_at',{ascending:false})),
+    safe(sb.from('clients').select('*').eq('user_id',uid).order('name')),
+    safe(sb.from('schedules').select('*').eq('user_id',uid).order('date')),
+    safe(sb.from('invoices').select('*').eq('user_id',uid).order('created_at',{ascending:false})),
+    safe(sb.from('activities').select('*').eq('user_id',uid).order('created_at',{ascending:false}).limit(30)),
+    safe(sb.from('profiles').select('*').eq('id',uid).single()),
   ]);
   db.sales      = (sR.data||[]).map(rowToSale);
   db.clients    = (cR.data||[]).map(rowToClient);
@@ -2362,7 +2365,15 @@ function esc(str){return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt
 sb.auth.onAuthStateChange(async(event,session)=>{
   if(session){
     currentUser=session.user;
-    await loadAllData();
+    // タイムアウト付き（10秒以内に完了しなければ空データで起動）
+    try {
+      await Promise.race([
+        loadAllData(),
+        new Promise((_,rej)=>setTimeout(()=>rej(new Error('load timeout')),10000))
+      ]);
+    } catch(e) {
+      console.warn('loadAllData:', e.message);
+    }
     document.getElementById('sidebar-username').textContent=db.settings.name;
     document.getElementById('sidebar-email').textContent=currentUser.email;
     applyAvatar();showApp();renderDashboard();
