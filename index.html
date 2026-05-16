@@ -1513,6 +1513,35 @@
             </div>
           </div>
 
+          <div class="settings-section" id="parent-link-section">
+            <div class="settings-section-title"><i class="fas fa-link"></i> 親アカウント連携</div>
+            <div class="card">
+              <div class="card-body">
+                <div id="parent-link-status" style="font-size:13px;margin-bottom:16px;padding:10px 14px;border-radius:8px;background:var(--surface2)"></div>
+                <!-- 未連携の場合：招待リンクを貼って連携 -->
+                <div id="parent-link-connect-area">
+                  <div style="font-size:12px;color:var(--text-secondary);margin-bottom:10px">親から受け取った招待リンクを貼り付けてな。</div>
+                  <div style="display:flex;gap:8px">
+                    <input type="text" class="form-control" id="parent-invite-input" placeholder="招待リンク（URL）を貼り付け" style="font-size:12px" />
+                    <button class="btn btn-primary btn-sm" style="white-space:nowrap" onclick="connectToParent()">
+                      <i class="fas fa-plug"></i> 連携する
+                    </button>
+                  </div>
+                  <div id="parent-link-msg" style="font-size:12px;margin-top:8px;min-height:16px"></div>
+                </div>
+                <!-- 連携済みの場合：同期ボタン -->
+                <div id="parent-sync-area" style="display:none">
+                  <button class="btn btn-primary" onclick="syncParentData()" style="width:100%">
+                    <i class="fas fa-rotate"></i> 親のデータを今すぐ同期する
+                  </button>
+                  <button class="btn btn-secondary btn-sm" onclick="unlinkParent()" style="margin-top:10px;width:100%;color:var(--danger);border-color:var(--danger)">
+                    <i class="fas fa-unlink"></i> 連携を解除する
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
           <div class="settings-section">
             <div class="settings-section-title"><i class="fas fa-user-plus"></i> 子アカウント招待</div>
             <div class="card">
@@ -2517,6 +2546,74 @@ function renderSettings() {
   const setT=(id,val)=>{const el=document.getElementById(id);val?el.classList.add('on'):el.classList.remove('on');};
   setT('toggle-animation',db.settings.animation);setT('toggle-notify',db.settings.notify);
   renderMethodTags();renderIndustryTags();renderScheduleTypeTags();renderClientStatusTags();
+  renderParentLinkStatus();
+}
+
+function renderParentLinkStatus() {
+  const statusEl = document.getElementById('parent-link-status');
+  const connectArea = document.getElementById('parent-link-connect-area');
+  const syncArea = document.getElementById('parent-sync-area');
+  if (!statusEl) return;
+  const isLinked = effectiveUserId && effectiveUserId !== currentUser?.id;
+  if (isLinked) {
+    statusEl.innerHTML = `<i class="fas fa-circle-check" style="color:var(--accent3);margin-right:8px"></i><span style="color:var(--accent3);font-weight:700">親アカウントと連携中</span>`;
+    connectArea.style.display = 'none';
+    syncArea.style.display = 'block';
+  } else {
+    statusEl.innerHTML = `<i class="fas fa-circle-xmark" style="color:var(--text-muted);margin-right:8px"></i><span style="color:var(--text-secondary)">まだ親アカウントと連携されてないで</span>`;
+    connectArea.style.display = 'block';
+    syncArea.style.display = 'none';
+  }
+}
+
+async function connectToParent() {
+  const input = document.getElementById('parent-invite-input');
+  const msgEl = document.getElementById('parent-link-msg');
+  const raw = input.value.trim();
+  if (!raw) { msgEl.style.color='var(--danger)'; msgEl.textContent='招待リンクを入力してな'; return; }
+  // URLからトークンを抽出
+  let token = raw;
+  try {
+    const u = new URL(raw);
+    token = u.searchParams.get('invite') || raw;
+  } catch(_) {}
+  if (!token || token === raw && !raw.includes('invite')) {
+    msgEl.style.color='var(--danger)'; msgEl.textContent='正しい招待リンクを貼り付けてな'; return;
+  }
+  msgEl.style.color='var(--text-secondary)'; msgEl.textContent='連携中...';
+  await processInviteToken(token, currentUser.id);
+  // 再ロードして確認
+  await loadAllData();
+  renderParentLinkStatus();
+  const roleEl = document.getElementById('sidebar-email');
+  if (effectiveUserId !== currentUser.id) {
+    roleEl.textContent = '子アカウント｜' + currentUser.email;
+    msgEl.style.color='var(--accent3)'; msgEl.textContent='連携完了！親のデータが表示されるようになったで。';
+    renderDashboard();
+  } else {
+    msgEl.style.color='var(--danger)'; msgEl.textContent='連携に失敗したで。リンクが正しいか確認してな。';
+  }
+}
+
+async function syncParentData() {
+  const btn = event?.target?.closest('button');
+  if (btn) { btn.disabled=true; btn.innerHTML='<i class="fas fa-rotate fa-spin"></i> 同期中...'; }
+  await loadAllData();
+  renderDashboard();
+  renderParentLinkStatus();
+  if (btn) { btn.disabled=false; btn.innerHTML='<i class="fas fa-rotate"></i> 親のデータを今すぐ同期する'; }
+  notify('親のデータを同期したで！', 'success');
+}
+
+async function unlinkParent() {
+  if (!confirm('親アカウントとの連携を解除するで。よろしい？')) return;
+  await sbFetch('profiles','PATCH',{ linked_to: null },`id=eq.${currentUser.id}`);
+  effectiveUserId = currentUser.id;
+  await loadAllData();
+  renderParentLinkStatus();
+  document.getElementById('sidebar-email').textContent = currentUser.email;
+  renderDashboard();
+  notify('連携を解除したで', 'info');
 }
 function renderMethodTags(){document.getElementById('methods-list').innerHTML=db.methods.map((m,i)=>`<div class="tag">${esc(m)}<span class="tag-remove" onclick="removeMethod(${i})"><i class="fas fa-times"></i></span></div>`).join('');}
 function renderIndustryTags(){document.getElementById('industries-list').innerHTML=db.industries.map((ind,i)=>`<div class="tag" style="background:rgba(0,212,170,0.1);border-color:rgba(0,212,170,0.25);color:var(--accent3)">${esc(ind)}<span class="tag-remove" onclick="removeIndustry(${i})"><i class="fas fa-times"></i></span></div>`).join('');}
@@ -2825,18 +2922,20 @@ sb.auth.onAuthStateChange(async(event,session)=>{
   if(session){
     currentUser=session.user;
     accessToken=session.access_token;
-    effectiveUserId=currentUser.id; // 先に自分のIDをセット、loadAllDataで上書き
+    effectiveUserId=currentUser.id;
+    // 既存アカウントでログインした場合も招待トークンを処理
+    if(pendingInviteToken){
+      await processInviteToken(pendingInviteToken, currentUser.id);
+    }
     try { await loadAllData(); } catch(e) { console.warn('loadAllData:', e.message); }
     document.getElementById('sidebar-username').textContent=db.settings.name;
     document.getElementById('sidebar-email').textContent=currentUser.email;
-    // 子アカウントの場合はサイドバーに表示
     const roleEl=document.getElementById('sidebar-email');
     if(effectiveUserId!==currentUser.id) roleEl.textContent='子アカウント｜'+currentUser.email;
     applyAvatar();showApp();renderDashboard();
   } else {
     currentUser=null;accessToken=null;effectiveUserId=null;
     hideApp();
-    // 招待トークンがあればサインアップタブを表示
     if(pendingInviteToken){
       switchAuthTab('signup');
       const notice=document.getElementById('signup-error');
