@@ -2208,19 +2208,34 @@ const pendingInviteToken = urlParams.get('invite') || null;
 // ──────────────────────────────────────────────
 async function loadAllData() {
   const uid = currentUser.id;
-  // まずプロフィールを取得してlinked_toを確認
-  const pR = await sbSelect('profiles',`id=eq.${uid}&limit=1`);
+
+  // プロフィールと自分のデータを同時に並列取得
+  const [pR, sR0, cR0, scR0, iR0, aR0] = await Promise.all([
+    sbSelect('profiles',`id=eq.${uid}&limit=1`),
+    sbSelect('sales',`user_id=eq.${uid}&order=created_at.desc`),
+    sbSelect('clients',`user_id=eq.${uid}&order=name.asc`),
+    sbSelect('schedules',`user_id=eq.${uid}&order=date.asc`),
+    sbSelect('invoices',`user_id=eq.${uid}&order=created_at.desc`),
+    sbSelect('activities',`user_id=eq.${uid}&order=created_at.desc&limit=30`),
+  ]);
+
   const pData = Array.isArray(pR.data) ? pR.data[0] : pR.data;
   const linkedTo = pData?.linked_to || null;
-  effectiveUserId = linkedTo || uid; // 親アカウントがあれば親のIDを使用
+  effectiveUserId = linkedTo || uid;
 
-  const [sR, cR, scR, iR, aR] = await Promise.all([
-    sbSelect('sales',`user_id=eq.${effectiveUserId}&order=created_at.desc`),
-    sbSelect('clients',`user_id=eq.${effectiveUserId}&order=name.asc`),
-    sbSelect('schedules',`user_id=eq.${effectiveUserId}&order=date.asc`),
-    sbSelect('invoices',`user_id=eq.${effectiveUserId}&order=created_at.desc`),
-    sbSelect('activities',`user_id=eq.${effectiveUserId}&order=created_at.desc&limit=30`),
-  ]);
+  let sR=sR0, cR=cR0, scR=scR0, iR=iR0, aR=aR0;
+
+  // 子アカウントの場合、親のデータを再取得
+  if (linkedTo && linkedTo !== uid) {
+    [sR, cR, scR, iR, aR] = await Promise.all([
+      sbSelect('sales',`user_id=eq.${linkedTo}&order=created_at.desc`),
+      sbSelect('clients',`user_id=eq.${linkedTo}&order=name.asc`),
+      sbSelect('schedules',`user_id=eq.${linkedTo}&order=date.asc`),
+      sbSelect('invoices',`user_id=eq.${linkedTo}&order=created_at.desc`),
+      sbSelect('activities',`user_id=eq.${linkedTo}&order=created_at.desc&limit=30`),
+    ]);
+  }
+
   db.sales      = (sR.data||[]).map(rowToSale);
   db.clients    = (cR.data||[]).map(rowToClient);
   db.schedules  = (scR.data||[]).map(r=>({...r, time: r.start_time||'', type: r.event_type||''}));
