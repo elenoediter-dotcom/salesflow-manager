@@ -2239,9 +2239,25 @@ async function saveSchedule(){
   if(!title||!date){notify('タイトルと日付は必須やで','error');return;}
   const id=editingScheduleId||uid();
   const item={id,title,date,time:document.getElementById('sch-time').value,type:document.getElementById('sch-type').value,client:document.getElementById('sch-client').value.trim(),memo:document.getElementById('sch-memo').value.trim()};
-  if(editingScheduleId){const idx=db.schedules.findIndex(x=>x.id===editingScheduleId);db.schedules[idx]=item;await sb.from('schedules').update({...item,user_id:currentUser.id}).eq('id',editingScheduleId);notify('予定を更新したで！','success');}
-  else{db.schedules.push(item);await sb.from('schedules').insert({...item,user_id:currentUser.id,created_at:new Date().toISOString()});await addActivity(`予定「<strong>${esc(title)}</strong>」を追加したで`,schedTypeColor[item.type],'fas fa-calendar-plus');notify('予定を追加したで！','success');}
-  closeModal('modal-schedule');renderSchedulePage();
+  const row={id,user_id:currentUser.id,title,date,"time":item.time,type:item.type,client:item.client,memo:item.memo};
+  try {
+    if(editingScheduleId){
+      const idx=db.schedules.findIndex(x=>x.id===editingScheduleId);db.schedules[idx]=item;
+      const{error}=await sb.from('schedules').update(row).eq('id',editingScheduleId);
+      if(error)throw error;
+      notify('予定を更新したで！','success');
+    } else {
+      db.schedules.push(item);
+      const{error}=await sb.from('schedules').insert({...row,created_at:new Date().toISOString()});
+      if(error)throw error;
+      await addActivity(`予定「<strong>${esc(title)}</strong>」を追加したで`,schedTypeColor[item.type],'fas fa-calendar-plus');
+      notify('予定を追加したで！','success');
+    }
+    closeModal('modal-schedule');renderSchedulePage();
+  } catch(e) {
+    notify('保存に失敗したで：'+e.message,'error');
+    console.error('saveSchedule error:',e);
+  }
 }
 function editSchedule(id){openScheduleModal(id);}
 function deleteSchedule(id){const s=db.schedules.find(x=>x.id===id);if(!s)return;openConfirm(`「${s.title}」を削除しますか？`,async()=>{db.schedules=db.schedules.filter(x=>x.id!==id);await sb.from('schedules').delete().eq('id',id);notify('削除したで','info');renderSchedulePage();});}
