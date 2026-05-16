@@ -1932,7 +1932,7 @@ async function loadAllData() {
   ]);
   db.sales      = (sR.data||[]).map(rowToSale);
   db.clients    = (cR.data||[]).map(rowToClient);
-  db.schedules  = scR.data||[];
+  db.schedules  = (scR.data||[]).map(r=>({...r, time: r.start_time||''}));
   db.invoices   = (iR.data||[]).map(rowToInvoice);
   db.activities = (aR.data||[]).map(r=>({text:r.text,color:r.color,icon:r.icon,time:r.created_at}));
   if (pR.data) {
@@ -2265,7 +2265,7 @@ async function saveSchedule(){
   if(!title||!date){notify('タイトルと日付は必須やで','error');return;}
   const id=editingScheduleId||uid();
   const item={id,title,date,time:document.getElementById('sch-time').value,type:document.getElementById('sch-type').value,client:document.getElementById('sch-client').value.trim(),memo:document.getElementById('sch-memo').value.trim()};
-  const row={id,user_id:currentUser.id,title,date,"time":item.time,type:item.type,client:item.client,memo:item.memo};
+  const row={id,user_id:currentUser.id,title,date,start_time:item.time,type:item.type,client:item.client,memo:item.memo};
   try {
     if(editingScheduleId){
       const idx=db.schedules.findIndex(x=>x.id===editingScheduleId);db.schedules[idx]=item;
