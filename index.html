@@ -649,6 +649,74 @@
       .form-group.span2 { grid-column: 1; }
     }
 
+    /* ──────────── MOBILE ──────────── */
+    .sidebar-overlay {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.6);
+      z-index: 99;
+      backdrop-filter: blur(2px);
+    }
+    .hamburger {
+      display: none;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      color: var(--text-primary);
+      width: 38px; height: 38px;
+      align-items: center; justify-content: center;
+      cursor: pointer; font-size: 15px;
+      flex-shrink: 0;
+    }
+
+    @media (max-width: 768px) {
+      body { overflow: auto; }
+
+      .sidebar {
+        transform: translateX(-100%);
+        transition: transform 0.3s cubic-bezier(0.4,0,0.2,1);
+        z-index: 200;
+        box-shadow: var(--shadow);
+      }
+      .sidebar.mobile-open { transform: translateX(0); }
+      .sidebar-overlay.active { display: block; }
+
+      .main { margin-left: 0; height: auto; overflow: visible; }
+      .content { padding: 16px; overflow: visible; height: auto; }
+      .topbar { padding: 0 16px; gap: 10px; }
+      .hamburger { display: flex; }
+      .topbar-title { font-size: 16px; }
+      .btn-secondary#btn-export { display: none; }
+
+      .stats-grid { grid-template-columns: 1fr 1fr; gap: 10px; }
+      .stat-value { font-size: 24px; }
+      .grid-2, .grid-3 { grid-template-columns: 1fr; gap: 14px; }
+
+      .modal { width: 95%; max-height: 92vh; margin: 16px; }
+      .modal.modal-lg { max-width: 95%; }
+      .form-grid { grid-template-columns: 1fr; }
+      .form-group.span2 { grid-column: 1; }
+
+      .invoice-status-bar { flex-wrap: wrap; gap: 8px; }
+      .inv-stat { min-width: calc(50% - 4px); }
+
+      .filter-bar { flex-wrap: wrap; }
+      .filter-bar .search-wrap { min-width: 100%; order: -1; }
+
+      table { font-size: 12px; }
+      th, td { padding: 8px 10px; }
+
+      .cal-cell { min-height: 50px; }
+      .cal-event { font-size: 9px; }
+
+      .notif-container { right: 12px; left: 12px; bottom: 12px; }
+      .notif { min-width: unset; }
+    }
+
+    @media (max-width: 400px) {
+      .stats-grid { grid-template-columns: 1fr; }
+    }
+
     /* ──────────── NOTIFICATION ──────────── */
     .notif-container {
       position: fixed;
@@ -984,8 +1052,12 @@
 
 <!-- MAIN -->
 <div class="main">
+  <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
   <header class="topbar">
-    <div>
+    <div class="hamburger" id="hamburger-btn" onclick="toggleSidebar()">
+      <i class="fas fa-bars"></i>
+    </div>
+    <div style="flex:1">
       <div class="topbar-title" id="topbar-title">ダッシュボード</div>
     </div>
     <div class="topbar-actions">
@@ -1916,8 +1988,25 @@
 const { createClient } = supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 let currentUser = null;
-let accessToken = null; // JWTを直接保持
+let accessToken = null;
+let effectiveUserId = null; // 親アカウントがいる場合は親のID、なければ自分のID
 let chartMethod = null, chartMonthly = null, chartStatus = null, chartRevenue = null;
+
+// ──────────── MOBILE SIDEBAR ────────────
+function toggleSidebar() {
+  document.querySelector('.sidebar').classList.toggle('mobile-open');
+  document.getElementById('sidebar-overlay').classList.toggle('active');
+}
+function closeSidebar() {
+  document.querySelector('.sidebar').classList.remove('mobile-open');
+  document.getElementById('sidebar-overlay').classList.remove('active');
+}
+// ナビクリック時にモバイルではサイドバーを閉じる
+document.addEventListener('DOMContentLoaded', () => {
+  document.querySelectorAll('.nav-item[data-page]').forEach(item => {
+    item.addEventListener('click', () => { if(window.innerWidth<=768) closeSidebar(); });
+  });
+});
 
 // Supabase JSクライアントをバイパスしてraw fetchでAPI呼び出し
 async function sbFetch(table, method, body=null, filter='', upsert=false) {
@@ -2003,10 +2092,18 @@ async function doSignup() {
   if (!email || !password) { errEl.textContent = 'メールとパスワードを入力してな'; return; }
   if (password.length < 6) { errEl.textContent = 'パスワードは6文字以上やで'; return; }
   setAuthLoading(true);
-  const { error } = await sb.auth.signUp({ email, password, options: { data: { name } } });
+  const { data, error } = await sb.auth.signUp({ email, password, options: { data: { name } } });
   setAuthLoading(false);
-  if (error) errEl.textContent = error.message;
-  else { errEl.style.color = '#00d4aa'; errEl.textContent = '確認メールを送ったで！メールを確認してな。'; }
+  if (error) { errEl.textContent = error.message; return; }
+  // 招待トークンがあれば処理
+  if (pendingInviteToken && data?.user) {
+    await processInviteToken(pendingInviteToken, data.user.id);
+    errEl.style.color = '#00d4aa';
+    errEl.textContent = '登録完了！親アカウントのデータにアクセスできるようになったで。';
+  } else {
+    errEl.style.color = '#00d4aa';
+    errEl.textContent = '登録完了！ログインしてな。';
+  }
 }
 
 async function doLogout() { await sb.auth.signOut(); }
@@ -2020,39 +2117,60 @@ function setAuthLoading(on) {
 function showApp() { document.getElementById('auth-overlay').style.display = 'none'; }
 function hideApp() { document.getElementById('auth-overlay').style.display = 'flex'; switchAuthTab('login'); }
 
-const INVITE_URL = 'https://sales-manager-nine-livid.vercel.app';
-const INVITE_MSG = `【営業管理システムへの招待】\nSalesFlowを一緒に使いませんか？\n以下のリンクから登録できます👇\n${INVITE_URL}`;
+const BASE_URL = 'https://sales-manager-nine-livid.vercel.app';
+let currentInviteToken = null;
 
-function copyInviteLink() {
-  navigator.clipboard.writeText(INVITE_URL).then(() => {
-    const msg = document.getElementById('copy-msg');
-    msg.textContent = '✓ リンクをコピーしたで！LINEやDMに貼り付けて送ってな';
-    setTimeout(() => { msg.textContent = ''; }, 3000);
-  }).catch(() => {
-    // fallback
-    const el = document.getElementById('invite-link-display');
-    el.select(); document.execCommand('copy');
-    document.getElementById('copy-msg').textContent = '✓ コピーしたで！';
-  });
+// トークン付き招待リンクを生成
+async function generateInviteLink() {
+  const msgEl = document.getElementById('copy-msg');
+  msgEl.style.color = 'var(--text-muted)'; msgEl.textContent = 'リンクを生成中...';
+  const { error } = await sbFetch('invitations','POST',{ inviter_id: currentUser.id });
+  if (error) { msgEl.style.color='#ff6b9d'; msgEl.textContent='生成失敗：'+error.message; return null; }
+  // 最新のトークンを取得
+  const res = await sbSelect('invitations',`inviter_id=eq.${currentUser.id}&order=created_at.desc&limit=1`);
+  const token = res.data?.[0]?.token;
+  if (!token) { msgEl.style.color='#ff6b9d'; msgEl.textContent='トークン取得失敗'; return null; }
+  return `${BASE_URL}?invite=${token}`;
 }
 
-function shareToLine() {
-  const encoded = encodeURIComponent(INVITE_MSG);
-  window.open(`https://line.me/R/msg/text/?${encoded}`, '_blank');
+async function copyInviteLink() {
+  const url = await generateInviteLink(); if (!url) return;
+  const invMsg = `【営業管理システムへの招待】\nSalesFlowを一緒に使いませんか？\n以下のリンクから登録できます👇\n${url}`;
+  const input = document.getElementById('invite-link-display');
+  if (input) input.value = url;
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    if (input) { input.select(); document.execCommand('copy'); }
+  }
+  const msg = document.getElementById('copy-msg');
+  msg.style.color = '#00d4aa';
+  msg.textContent = '✓ 招待リンクをコピーしたで！LINEやDMに貼り付けて送ってな';
+  setTimeout(() => { msg.textContent = ''; }, 4000);
 }
 
-function shareToX() {
-  const encoded = encodeURIComponent(INVITE_MSG);
-  window.open(`https://twitter.com/intent/tweet?text=${encoded}`, '_blank');
+async function shareToLine() {
+  const url = await generateInviteLink(); if (!url) return;
+  const msg = `【営業管理システムへの招待】\nSalesFlowを一緒に使いませんか？\n以下のリンクから登録できます👇\n${url}`;
+  window.open(`https://line.me/R/msg/text/?${encodeURIComponent(msg)}`, '_blank');
 }
 
-function nativeShare() {
+async function shareToX() {
+  const url = await generateInviteLink(); if (!url) return;
+  const msg = `SalesFlowへの招待\n${url}`;
+  window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(msg)}`, '_blank');
+}
+
+async function nativeShare() {
+  const url = await generateInviteLink(); if (!url) return;
+  const shareData = { title:'SalesFlow 招待', text:'営業管理システムに招待されました', url };
   if (navigator.share) {
-    navigator.share({ title: 'SalesFlow 招待', text: INVITE_MSG, url: INVITE_URL })
-      .catch(() => { copyInviteLink(); });
+    navigator.share(shareData).catch(() => {});
   } else {
-    copyInviteLink();
-    document.getElementById('copy-msg').textContent = '✓ リンクをコピーしたで！好きなアプリに貼り付けて送ってな';
+    await navigator.clipboard.writeText(url).catch(() => {});
+    const msg = document.getElementById('copy-msg');
+    msg.style.color = '#00d4aa';
+    msg.textContent = '✓ リンクをコピーしたで！好きなアプリに貼り付けてな';
   }
 }
 
@@ -2060,31 +2178,54 @@ async function sendInvite() {
   const email = document.getElementById('invite-email').value.trim();
   const msgEl = document.getElementById('invite-msg');
   if (!email) { msgEl.style.color='#ff6b9d'; msgEl.textContent='メールアドレスを入力してな'; return; }
-  msgEl.style.color='#8b8fa8'; msgEl.textContent='送信中...';
-  const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true } });
-  if (error) { msgEl.style.color='#ff6b9d'; msgEl.textContent='送信失敗：'+error.message; }
-  else { msgEl.style.color='#00d4aa'; msgEl.textContent=`✓ ${email} に招待メールを送ったで！`; document.getElementById('invite-email').value=''; }
+  msgEl.style.color='#8b8fa8'; msgEl.textContent='招待リンクを生成中...';
+  const url = await generateInviteLink();
+  if (!url) { msgEl.textContent=''; return; }
+  const body = `営業管理システム（SalesFlow）への招待です。\n以下のリンクから登録してください：\n${url}`;
+  window.open(`mailto:${encodeURIComponent(email)}?subject=${encodeURIComponent('SalesFlow 招待')}&body=${encodeURIComponent(body)}`);
+  msgEl.style.color='#00d4aa'; msgEl.textContent=`✓ ${email} へのメールを開いたで！送信してな`;
+  document.getElementById('invite-email').value='';
 }
+
+// 招待トークンを処理（子アカウント登録後）
+async function processInviteToken(token, userId) {
+  if (!token) return;
+  const res = await sbSelect('invitations',`token=eq.${token}&used=eq.false&limit=1`);
+  const invite = res.data?.[0];
+  if (!invite) return;
+  // プロフィールにlinked_toをセット
+  await sbFetch('profiles','PATCH',{ linked_to: invite.inviter_id },`id=eq.${userId}`);
+  // トークンを使用済みにする
+  await sbFetch('invitations','PATCH',{ used: true },`token=eq.${token}`);
+}
+
+// URLの?inviteパラメータを確認
+const urlParams = new URLSearchParams(window.location.search);
+const pendingInviteToken = urlParams.get('invite') || null;
 
 // ──────────────────────────────────────────────
 //  DATA LOAD
 // ──────────────────────────────────────────────
 async function loadAllData() {
   const uid = currentUser.id;
-  const [sR, cR, scR, iR, aR, pR] = await Promise.all([
-    sbSelect('sales',`user_id=eq.${uid}&order=created_at.desc`),
-    sbSelect('clients',`user_id=eq.${uid}&order=name.asc`),
-    sbSelect('schedules',`user_id=eq.${uid}&order=date.asc`),
-    sbSelect('invoices',`user_id=eq.${uid}&order=created_at.desc`),
-    sbSelect('activities',`user_id=eq.${uid}&order=created_at.desc&limit=30`),
-    sbSelect('profiles',`id=eq.${uid}&limit=1`),
+  // まずプロフィールを取得してlinked_toを確認
+  const pR = await sbSelect('profiles',`id=eq.${uid}&limit=1`);
+  const pData = Array.isArray(pR.data) ? pR.data[0] : pR.data;
+  const linkedTo = pData?.linked_to || null;
+  effectiveUserId = linkedTo || uid; // 親アカウントがあれば親のIDを使用
+
+  const [sR, cR, scR, iR, aR] = await Promise.all([
+    sbSelect('sales',`user_id=eq.${effectiveUserId}&order=created_at.desc`),
+    sbSelect('clients',`user_id=eq.${effectiveUserId}&order=name.asc`),
+    sbSelect('schedules',`user_id=eq.${effectiveUserId}&order=date.asc`),
+    sbSelect('invoices',`user_id=eq.${effectiveUserId}&order=created_at.desc`),
+    sbSelect('activities',`user_id=eq.${effectiveUserId}&order=created_at.desc&limit=30`),
   ]);
   db.sales      = (sR.data||[]).map(rowToSale);
   db.clients    = (cR.data||[]).map(rowToClient);
   db.schedules  = (scR.data||[]).map(r=>({...r, time: r.start_time||'', type: r.event_type||''}));
   db.invoices   = (iR.data||[]).map(rowToInvoice);
   db.activities = (aR.data||[]).map(r=>({text:r.text,color:r.color,icon:r.icon,time:r.created_at}));
-  const pData = Array.isArray(pR.data) ? pR.data[0] : pR.data;
   if (pData) {
     const p = pData;
     db.settings = { name:p.name||'マイユーザー', targetSales:p.target_sales||50, targetContracts:p.target_contracts||5, animation:p.animation!==false, notify:p.notify_enabled!==false, avatar:p.avatar||'' };
@@ -2149,7 +2290,7 @@ function notify(msg,type='success',icon='') {
 function addActivity(text,color='var(--accent)',icon='fas fa-star') {
   db.activities.unshift({text,color,icon,time:new Date().toISOString()});
   if(db.activities.length>30) db.activities.pop();
-  sbFetch('activities','POST',{user_id:currentUser.id,text,color,icon}).catch(()=>{});
+  sbFetch('activities','POST',{user_id:effectiveUserId||currentUser.id,text,color,icon}).catch(()=>{});
 }
 function renderActivities() {
   const el=document.getElementById('activity-list');
@@ -2443,7 +2584,7 @@ async function saveSales() {
   if(!client||!status){notify('クライアント名とステータスは必須やで','error');return;}
   const id=editingSalesId||uid();
   const item={id,date:document.getElementById('s-date').value,client,method:document.getElementById('s-method').value,status,apo:document.getElementById('s-apo').value,order:document.getElementById('s-order').value,contract:document.getElementById('s-contract').value,amount:document.getElementById('s-amount').value,memo:document.getElementById('s-memo').value.trim()};
-  const row={id,user_id:currentUser.id,date:item.date,client,method:item.method,status,apo:+item.apo,has_order:+item.order,has_contract:+item.contract,amount:item.amount||null,memo:item.memo,updated_at:new Date().toISOString()};
+  const row={id,user_id:effectiveUserId,date:item.date,client,method:item.method,status,apo:+item.apo,has_order:+item.order,has_contract:+item.contract,amount:item.amount||null,memo:item.memo,updated_at:new Date().toISOString()};
   if(editingSalesId){
     const idx=db.sales.findIndex(x=>x.id===editingSalesId);db.sales[idx]=item;
     const{error}=await sbFetch('sales','PATCH',row,`id=eq.${editingSalesId}`);
@@ -2487,7 +2628,7 @@ async function saveClient() {
   const name=document.getElementById('c-name').value.trim();if(!name){notify('クライアント名は必須やで','error');return;}
   const id=editingClientId||uid();
   const item={id,name,contact:document.getElementById('c-contact').value.trim(),email:document.getElementById('c-email').value.trim(),phone:document.getElementById('c-phone').value.trim(),industry:document.getElementById('c-industry').value,status:document.getElementById('c-status').value,sns:document.getElementById('c-sns').value.trim(),budget:document.getElementById('c-budget').value,memo:document.getElementById('c-memo').value.trim()};
-  const row={...item,user_id:currentUser.id,updated_at:new Date().toISOString()};
+  const row={...item,user_id:effectiveUserId,updated_at:new Date().toISOString()};
   if(editingClientId){
     const idx=db.clients.findIndex(x=>x.id===editingClientId);db.clients[idx]=item;
     const{error}=await sbFetch('clients','PATCH',row,`id=eq.${editingClientId}`);
@@ -2556,7 +2697,7 @@ async function saveSchedule(){
   if(!title||!date){notify('タイトルと日付は必須やで','error');return;}
   const id=editingScheduleId||uid();
   const item={id,title,date,time:document.getElementById('sch-time').value,type:document.getElementById('sch-type').value,client:document.getElementById('sch-client').value.trim(),memo:document.getElementById('sch-memo').value.trim()};
-  const row={id,user_id:currentUser.id,title,date,start_time:item.time,event_type:item.type,client:item.client,memo:item.memo};
+  const row={id,user_id:effectiveUserId,title,date,start_time:item.time,event_type:item.type,client:item.client,memo:item.memo};
   try {
     if(editingScheduleId){
       const idx=db.schedules.findIndex(x=>x.id===editingScheduleId);db.schedules[idx]=item;
@@ -2617,7 +2758,7 @@ async function saveInvoice(){
   const client=document.getElementById('inv-client').value.trim(),number=document.getElementById('inv-number').value.trim();if(!client||!number){notify('請求書番号とクライアント名は必須やで','error');return;}
   const{subtotal,tax,total}=calcInvTotal();const id=editingInvoiceId||uid();
   const item={id,number,client,issueDate:document.getElementById('inv-issue-date').value,dueDate:document.getElementById('inv-due-date').value,status:document.getElementById('inv-status').value,taxRate:document.getElementById('inv-tax').value,memo:document.getElementById('inv-memo').value.trim(),items:JSON.parse(JSON.stringify(invItems)),subtotal,tax,total};
-  const row={id,user_id:currentUser.id,number,client,issue_date:item.issueDate,due_date:item.dueDate,status:item.status,tax_rate:+item.taxRate,memo:item.memo,items:item.items,subtotal,tax_amount:tax,total,updated_at:new Date().toISOString()};
+  const row={id,user_id:effectiveUserId,number,client,issue_date:item.issueDate,due_date:item.dueDate,status:item.status,tax_rate:+item.taxRate,memo:item.memo,items:item.items,subtotal,tax_amount:tax,total,updated_at:new Date().toISOString()};
   if(editingInvoiceId){
     const idx=db.invoices.findIndex(x=>x.id===editingInvoiceId);db.invoices[idx]=item;
     const{error}=await sbFetch('invoices','PATCH',row,`id=eq.${editingInvoiceId}`);
@@ -2668,13 +2809,24 @@ function esc(str){return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt
 sb.auth.onAuthStateChange(async(event,session)=>{
   if(session){
     currentUser=session.user;
-    accessToken=session.access_token; // JWTを保存
+    accessToken=session.access_token;
+    effectiveUserId=currentUser.id; // 先に自分のIDをセット、loadAllDataで上書き
     try { await loadAllData(); } catch(e) { console.warn('loadAllData:', e.message); }
     document.getElementById('sidebar-username').textContent=db.settings.name;
     document.getElementById('sidebar-email').textContent=currentUser.email;
+    // 子アカウントの場合はサイドバーに表示
+    const roleEl=document.getElementById('sidebar-email');
+    if(effectiveUserId!==currentUser.id) roleEl.textContent='子アカウント｜'+currentUser.email;
     applyAvatar();showApp();renderDashboard();
   } else {
-    currentUser=null;accessToken=null;hideApp();
+    currentUser=null;accessToken=null;effectiveUserId=null;
+    hideApp();
+    // 招待トークンがあればサインアップタブを表示
+    if(pendingInviteToken){
+      switchAuthTab('signup');
+      const notice=document.getElementById('signup-error');
+      if(notice){notice.style.color='#00d4aa';notice.textContent='招待リンクから来たで！アカウントを作成してな。';}
+    }
   }
 });
 sb.auth.getSession().then(({data:{session}})=>{if(!session)hideApp();});
