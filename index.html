@@ -1847,7 +1847,50 @@
 const { createClient } = supabase;
 const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 let currentUser = null;
+let accessToken = null; // JWTを直接保持
 let chartMethod = null, chartMonthly = null, chartStatus = null;
+
+// Supabase JSクライアントをバイパスしてraw fetchでAPI呼び出し
+async function sbFetch(table, method, body=null, filter='', upsert=false) {
+  const url = `${SUPABASE_URL}/rest/v1/${table}${filter ? '?'+filter : ''}`;
+  const headers = { 'apikey': SUPABASE_ANON, 'Content-Type': 'application/json' };
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  if (method==='POST') headers['Prefer'] = upsert ? 'resolution=merge-duplicates,return=minimal' : 'return=minimal';
+  if (method==='PATCH'||method==='DELETE') headers['Prefer'] = 'return=minimal';
+
+  let res;
+  try {
+    res = await Promise.race([
+      fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined }),
+      new Promise((_,rej) => setTimeout(() => rej(new Error('接続タイムアウト（8秒）')), 8000))
+    ]);
+  } catch(e) { return { error: { message: e.message } }; }
+
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { const j = await res.json(); msg = j.message || j.hint || j.code || msg; } catch(_){}
+    console.error(`[sbFetch] ${method} ${table} → ${msg}`);
+    return { error: { message: msg } };
+  }
+  return { error: null };
+}
+
+// GETリクエスト（SELECT）用
+async function sbSelect(table, filter='') {
+  const url = `${SUPABASE_URL}/rest/v1/${table}?${filter}`;
+  const headers = { 'apikey': SUPABASE_ANON, 'Accept': 'application/json' };
+  if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
+  try {
+    const res = await Promise.race([
+      fetch(url, { headers }),
+      new Promise((_,rej) => setTimeout(() => rej(new Error('timeout')), 8000))
+    ]);
+    if (!res.ok) return { data: null, error: { message: `HTTP ${res.status}` } };
+    return { data: await res.json(), error: null };
+  } catch(e) {
+    return { data: null, error: { message: e.message } };
+  }
+}
 
 // ローカルキャッシュ（描画はここから読む）
 let db = {
@@ -1922,24 +1965,22 @@ async function sendInvite() {
 // ──────────────────────────────────────────────
 async function loadAllData() {
   const uid = currentUser.id;
-  const t = (ms) => new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms));
-  const safe = (promise) => Promise.race([promise, t(8000)]).catch(e=>({data:null,error:e}));
-
   const [sR, cR, scR, iR, aR, pR] = await Promise.all([
-    safe(sb.from('sales').select('*').eq('user_id',uid).order('created_at',{ascending:false})),
-    safe(sb.from('clients').select('*').eq('user_id',uid).order('name')),
-    safe(sb.from('schedules').select('*').eq('user_id',uid).order('date')),
-    safe(sb.from('invoices').select('*').eq('user_id',uid).order('created_at',{ascending:false})),
-    safe(sb.from('activities').select('*').eq('user_id',uid).order('created_at',{ascending:false}).limit(30)),
-    safe(sb.from('profiles').select('*').eq('id',uid).single()),
+    sbSelect('sales',`user_id=eq.${uid}&order=created_at.desc`),
+    sbSelect('clients',`user_id=eq.${uid}&order=name.asc`),
+    sbSelect('schedules',`user_id=eq.${uid}&order=date.asc`),
+    sbSelect('invoices',`user_id=eq.${uid}&order=created_at.desc`),
+    sbSelect('activities',`user_id=eq.${uid}&order=created_at.desc&limit=30`),
+    sbSelect('profiles',`id=eq.${uid}&limit=1`),
   ]);
   db.sales      = (sR.data||[]).map(rowToSale);
   db.clients    = (cR.data||[]).map(rowToClient);
   db.schedules  = (scR.data||[]).map(r=>({...r, time: r.start_time||'', type: r.event_type||''}));
   db.invoices   = (iR.data||[]).map(rowToInvoice);
   db.activities = (aR.data||[]).map(r=>({text:r.text,color:r.color,icon:r.icon,time:r.created_at}));
-  if (pR.data) {
-    const p = pR.data;
+  const pData = Array.isArray(pR.data) ? pR.data[0] : pR.data;
+  if (pData) {
+    const p = pData;
     db.settings = { name:p.name||'マイユーザー', targetSales:p.target_sales||50, targetContracts:p.target_contracts||5, animation:p.animation!==false, notify:p.notify_enabled!==false, avatar:p.avatar||'' };
     if (p.methods && p.methods.length)       db.methods       = p.methods;
     if (p.industries && p.industries.length) db.industries    = p.industries;
@@ -1997,19 +2038,11 @@ function notify(msg,type='success',icon='') {
 // ──────────────────────────────────────────────
 //  ACTIVITY LOG
 // ──────────────────────────────────────────────
-// タイムアウト付きwrite helper（8秒で諦める）
-function sbWrite(promise) {
-  return Promise.race([
-    promise,
-    new Promise((_,rej)=>setTimeout(()=>rej(new Error('接続タイムアウト。再度試してな')),8000))
-  ]);
-}
 
 function addActivity(text,color='var(--accent)',icon='fas fa-star') {
   db.activities.unshift({text,color,icon,time:new Date().toISOString()});
   if(db.activities.length>30) db.activities.pop();
-  // バックグラウンドで非同期実行（メイン処理をブロックしない）
-  sb.from('activities').insert({user_id:currentUser.id,text,color,icon}).catch(()=>{});
+  sbFetch('activities','POST',{user_id:currentUser.id,text,color,icon}).catch(()=>{});
 }
 function renderActivities() {
   const el=document.getElementById('activity-list');
@@ -2160,11 +2193,11 @@ async function saveProfile() {
   db.settings.name=name;
   db.settings.targetSales=parseInt(document.getElementById('settings-target-sales').value)||50;
   db.settings.targetContracts=parseInt(document.getElementById('settings-target-contracts').value)||5;
-  const{error:pErr}=await sbWrite(sb.from('profiles').upsert({id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,updated_at:new Date().toISOString()}));
+  const{error:pErr}=await sbFetch('profiles','POST',{id:currentUser.id,name:db.settings.name,target_sales:db.settings.targetSales,target_contracts:db.settings.targetContracts,animation:db.settings.animation,notify_enabled:db.settings.notify,avatar:db.settings.avatar,methods:db.methods,industries:db.industries,schedule_types:db.scheduleTypes,updated_at:new Date().toISOString()},'',true);
   if(pErr){notify('保存に失敗したで：'+pErr.message,'error');return;}
   document.getElementById('sidebar-username').textContent=name;applyAvatar();notify('プロフィールを保存したで！','success');
 }
-function toggleSetting(el,key){el.classList.toggle('on');db.settings[key]=el.classList.contains('on');sb.from('profiles').update({[key==='animation'?'animation':'notify_enabled']:db.settings[key]}).eq('id',currentUser.id);}
+function toggleSetting(el,key){el.classList.toggle('on');db.settings[key]=el.classList.contains('on');sbFetch('profiles','PATCH',{[key==='animation'?'animation':'notify_enabled']:db.settings[key]},`id=eq.${currentUser.id}`);}
 
 // ──────────────────────────────────────────────
 //  PROFILE IMAGE
@@ -2201,13 +2234,13 @@ async function saveSales() {
   const row={id,user_id:currentUser.id,date:item.date,client,method:item.method,status,apo:+item.apo,has_order:+item.order,has_contract:+item.contract,amount:item.amount||null,memo:item.memo,updated_at:new Date().toISOString()};
   if(editingSalesId){
     const idx=db.sales.findIndex(x=>x.id===editingSalesId);db.sales[idx]=item;
-    const{error}=await sbWrite(sb.from('sales').update(row).eq('id',editingSalesId));
+    const{error}=await sbFetch('sales','PATCH',row,`id=eq.${editingSalesId}`);
     if(error)throw error;
     addActivity(`<strong>${esc(client)}</strong> の営業情報を更新したで`,'var(--accent)','fas fa-pen');
     notify('更新したで！','success');
   } else {
     db.sales.unshift(item);
-    const{error}=await sbWrite(sb.from('sales').insert({...row,created_at:new Date().toISOString()}));
+    const{error}=await sbFetch('sales','POST',{...row,created_at:new Date().toISOString()});
     if(error)throw error;
     addActivity(`<strong>${esc(client)}</strong> への営業を記録したで（${esc(item.method)}）`,'var(--accent-light)','fas fa-paper-plane');
     notify('営業を追加したで！','success');
@@ -2220,7 +2253,7 @@ function deleteSales(id){
   const s=db.sales.find(x=>x.id===id);if(!s)return;
   openConfirm(`「${s.client}」の営業記録を削除しますか？`,async()=>{
     db.sales=db.sales.filter(x=>x.id!==id);
-    sbWrite(sb.from('sales').delete().eq('id',id)).catch(()=>{});
+    sbFetch('sales','DELETE',null,`id=eq.${id}`).catch(()=>{});
     addActivity(`<strong>${esc(s.client)}</strong> の営業記録を削除したで`,'var(--accent2)','fas fa-trash');
     notify('削除したで','info');renderSalesTable();renderDashboard();document.getElementById('nav-badge-sales').textContent=db.sales.length;
   });
@@ -2244,13 +2277,13 @@ async function saveClient() {
   const row={...item,user_id:currentUser.id,updated_at:new Date().toISOString()};
   if(editingClientId){
     const idx=db.clients.findIndex(x=>x.id===editingClientId);db.clients[idx]=item;
-    const{error}=await sbWrite(sb.from('clients').update(row).eq('id',editingClientId));
+    const{error}=await sbFetch('clients','PATCH',row,`id=eq.${editingClientId}`);
     if(error)throw error;
     addActivity(`<strong>${esc(name)}</strong> のクライアント情報を更新したで`,'var(--accent3)','fas fa-user-pen');
     notify('更新したで！','success');
   } else {
     db.clients.push(item);
-    const{error}=await sbWrite(sb.from('clients').insert({...row,created_at:new Date().toISOString()}));
+    const{error}=await sbFetch('clients','POST',{...row,created_at:new Date().toISOString()});
     if(error)throw error;
     addActivity(`<strong>${esc(name)}</strong> をクライアントに追加したで`,'var(--accent3)','fas fa-user-plus');
     notify('クライアントを追加したで！','success');
@@ -2262,7 +2295,7 @@ function deleteClient(id){
   const c=db.clients.find(x=>x.id===id);if(!c)return;
   openConfirm(`「${c.name}」を削除しますか？`,async()=>{
     db.clients=db.clients.filter(x=>x.id!==id);
-    sbWrite(sb.from('clients').delete().eq('id',id)).catch(()=>{});
+    sbFetch('clients','DELETE',null,`id=eq.${id}`).catch(()=>{});
     notify('削除したで','info');renderClientsTable();document.getElementById('nav-badge-clients').textContent=db.clients.length;
   });
 }
@@ -2314,12 +2347,12 @@ async function saveSchedule(){
   try {
     if(editingScheduleId){
       const idx=db.schedules.findIndex(x=>x.id===editingScheduleId);db.schedules[idx]=item;
-      const{error}=await sbWrite(sb.from('schedules').update(row).eq('id',editingScheduleId));
+      const{error}=await sbFetch('schedules','PATCH',row,`id=eq.${editingScheduleId}`);
       if(error)throw error;
       notify('予定を更新したで！','success');
     } else {
       db.schedules.push(item);
-      const{error}=await sbWrite(sb.from('schedules').insert({...row,created_at:new Date().toISOString()}));
+      const{error}=await sbFetch('schedules','POST',{...row,created_at:new Date().toISOString()});
       if(error)throw error;
       addActivity(`予定「<strong>${esc(title)}</strong>」を追加したで`,getTypeColor(item.type),'fas fa-calendar-plus');
       notify('予定を追加したで！','success');
@@ -2331,7 +2364,7 @@ async function saveSchedule(){
   }
 }
 function editSchedule(id){openScheduleModal(id);}
-function deleteSchedule(id){const s=db.schedules.find(x=>x.id===id);if(!s)return;openConfirm(`「${s.title}」を削除しますか？`,async()=>{db.schedules=db.schedules.filter(x=>x.id!==id);sbWrite(sb.from('schedules').delete().eq('id',id)).catch(()=>{});notify('削除したで','info');renderSchedulePage();});}
+function deleteSchedule(id){const s=db.schedules.find(x=>x.id===id);if(!s)return;openConfirm(`「${s.title}」を削除しますか？`,async()=>{db.schedules=db.schedules.filter(x=>x.id!==id);sbFetch('schedules','DELETE',null,`id=eq.${id}`).catch(()=>{});notify('削除したで','info');renderSchedulePage();});}
 
 // ──────────────────────────────────────────────
 //  INVOICE CRUD
@@ -2374,12 +2407,12 @@ async function saveInvoice(){
   const row={id,user_id:currentUser.id,number,client,issue_date:item.issueDate,due_date:item.dueDate,status:item.status,tax_rate:+item.taxRate,memo:item.memo,items:item.items,subtotal,tax_amount:tax,total,updated_at:new Date().toISOString()};
   if(editingInvoiceId){
     const idx=db.invoices.findIndex(x=>x.id===editingInvoiceId);db.invoices[idx]=item;
-    const{error}=await sbWrite(sb.from('invoices').update(row).eq('id',editingInvoiceId));
+    const{error}=await sbFetch('invoices','PATCH',row,`id=eq.${editingInvoiceId}`);
     if(error)throw error;
     notify('請求書を更新したで！','success');
   } else {
     db.invoices.unshift(item);
-    const{error}=await sbWrite(sb.from('invoices').insert({...row,created_at:new Date().toISOString()}));
+    const{error}=await sbFetch('invoices','POST',{...row,created_at:new Date().toISOString()});
     if(error)throw error;
     addActivity(`請求書「<strong>${esc(number)}</strong>」を作成したで（¥${total.toLocaleString()}）`,'var(--accent3)','fas fa-file-invoice-dollar');
     notify('請求書を作成したで！','success');
@@ -2387,7 +2420,7 @@ async function saveInvoice(){
   closeModal('modal-invoice');renderInvoicePage();
 }
 function editInvoice(id){openInvoiceModal(id);}
-function deleteInvoice(id){const inv=db.invoices.find(x=>x.id===id);if(!inv)return;openConfirm(`請求書「${inv.number}」を削除しますか？`,async()=>{db.invoices=db.invoices.filter(x=>x.id!==id);sbWrite(sb.from('invoices').delete().eq('id',id)).catch(()=>{});notify('削除したで','info');renderInvoicePage();});}
+function deleteInvoice(id){const inv=db.invoices.find(x=>x.id===id);if(!inv)return;openConfirm(`請求書「${inv.number}」を削除しますか？`,async()=>{db.invoices=db.invoices.filter(x=>x.id!==id);sbFetch('invoices','DELETE',null,`id=eq.${id}`).catch(()=>{});notify('削除したで','info');renderInvoicePage();});}
 
 // ──────────────────────────────────────────────
 //  CONFIRM / MODAL
@@ -2417,20 +2450,13 @@ function esc(str){return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt
 sb.auth.onAuthStateChange(async(event,session)=>{
   if(session){
     currentUser=session.user;
-    // タイムアウト付き（10秒以内に完了しなければ空データで起動）
-    try {
-      await Promise.race([
-        loadAllData(),
-        new Promise((_,rej)=>setTimeout(()=>rej(new Error('load timeout')),10000))
-      ]);
-    } catch(e) {
-      console.warn('loadAllData:', e.message);
-    }
+    accessToken=session.access_token; // JWTを保存
+    try { await loadAllData(); } catch(e) { console.warn('loadAllData:', e.message); }
     document.getElementById('sidebar-username').textContent=db.settings.name;
     document.getElementById('sidebar-email').textContent=currentUser.email;
     applyAvatar();showApp();renderDashboard();
   } else {
-    currentUser=null;hideApp();
+    currentUser=null;accessToken=null;hideApp();
   }
 });
 sb.auth.getSession().then(({data:{session}})=>{if(!session)hideApp();});
