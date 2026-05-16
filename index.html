@@ -1677,14 +1677,21 @@
         </div>
         <div class="form-group">
           <label class="form-label">予算感</label>
-          <select class="form-control" id="c-budget">
-            <option value="">未確認</option>
-            <option value="〜5万円">〜5万円</option>
-            <option value="5〜10万円">5〜10万円</option>
-            <option value="10〜30万円">10〜30万円</option>
-            <option value="30万円〜">30万円〜</option>
-            <option value="要相談">要相談</option>
-          </select>
+          <input type="text" class="form-control" id="c-budget"
+            placeholder="例：50,000円 / 〜10万円 / 要相談"
+            list="budget-suggestions" autocomplete="off" />
+          <datalist id="budget-suggestions">
+            <option value="未確認">
+            <option value="〜3万円">
+            <option value="〜5万円">
+            <option value="5〜10万円">
+            <option value="10〜20万円">
+            <option value="10〜30万円">
+            <option value="30〜50万円">
+            <option value="50万円〜">
+            <option value="要相談">
+            <option value="月額契約">
+          </datalist>
         </div>
         <div class="form-group span2">
           <label class="form-label">メモ・備考</label>
