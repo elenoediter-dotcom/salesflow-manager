@@ -2019,6 +2019,8 @@ const sb = createClient(SUPABASE_URL, SUPABASE_ANON);
 let currentUser = null;
 let accessToken = null;
 let effectiveUserId = null; // 親アカウントがいる場合は親のID、なければ自分のID
+let realtimeChannel = null;
+let realtimeDebounceTimer = null;
 let chartMethod = null, chartMonthly = null, chartStatus = null, chartRevenue = null;
 
 // ──────────── MOBILE SIDEBAR ────────────
@@ -2217,6 +2219,35 @@ async function sendInvite() {
 }
 
 // 招待トークンを処理（子アカウント登録後）
+function setupRealtimeSync() {
+  if (realtimeChannel) { sb.removeChannel(realtimeChannel); realtimeChannel = null; }
+  if (!effectiveUserId) return;
+  const watchId = effectiveUserId;
+  const tables = ['sales','clients','schedules','invoices','activities'];
+  let ch = sb.channel(`realtime-${watchId}`);
+  tables.forEach(table => {
+    ch = ch.on('postgres_changes',
+      { event: '*', schema: 'public', table, filter: `user_id=eq.${watchId}` },
+      () => handleRealtimeChange()
+    );
+  });
+  realtimeChannel = ch.subscribe();
+}
+
+function handleRealtimeChange() {
+  clearTimeout(realtimeDebounceTimer);
+  realtimeDebounceTimer = setTimeout(async () => {
+    await loadAllData();
+    const activePage = document.querySelector('.page.active')?.id?.replace('page-','');
+    if (activePage === 'dashboard')  renderDashboard();
+    else if (activePage === 'sales')    renderSalesTable();
+    else if (activePage === 'clients')  renderClientsTable();
+    else if (activePage === 'schedule') renderSchedulePage();
+    else if (activePage === 'invoice')  renderInvoicePage();
+    else if (activePage === 'analytics') renderAnalytics();
+  }, 600);
+}
+
 async function processInviteToken(token, userId) {
   if (!token) return;
   const res = await sbSelect('invitations',`token=eq.${token}&used=eq.false&limit=1`);
@@ -2928,12 +2959,14 @@ sb.auth.onAuthStateChange(async(event,session)=>{
       await processInviteToken(pendingInviteToken, currentUser.id);
     }
     try { await loadAllData(); } catch(e) { console.warn('loadAllData:', e.message); }
+    setupRealtimeSync();
     document.getElementById('sidebar-username').textContent=db.settings.name;
     document.getElementById('sidebar-email').textContent=currentUser.email;
     const roleEl=document.getElementById('sidebar-email');
     if(effectiveUserId!==currentUser.id) roleEl.textContent='子アカウント｜'+currentUser.email;
     applyAvatar();showApp();renderDashboard();
   } else {
+    if(realtimeChannel){ sb.removeChannel(realtimeChannel); realtimeChannel=null; }
     currentUser=null;accessToken=null;effectiveUserId=null;
     hideApp();
     if(pendingInviteToken){
